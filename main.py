@@ -29,11 +29,14 @@ DEFAULT_OUTPUT_TEMPLATE = '%(title)s.%(ext)s'
 
 class Config:
     """配置管理类"""
-    def __init__(self):
+    def __init__(self, audio_only=False, audio_quality=2):
         self.profile_path = self._get_profile_path()
         self.cookies_file = DEFAULT_COOKIES_FILE
         self.urls_file = DEFAULT_URLS_FILE
         self.output_template = DEFAULT_OUTPUT_TEMPLATE
+        self.download_dir = self._get_download_dir()
+        self.audio_only = audio_only
+        self.audio_quality = audio_quality
         self.proxy = os.getenv('PROXY')
 
         # 过滤空值
@@ -42,6 +45,11 @@ class Config:
             logger.info(f"使用代理: {self.proxy}")
         else:
             self.proxy = None
+
+        # 显示音频设置
+        logger.info(f"音频仅下载模式: {'启用' if self.audio_only else '禁用'}")
+        quality_names = {0: '最差', 1: '较差', 2: '良好', 3: '很好', 4: '极好', 5: '最佳'}
+        logger.info(f"音频质量设置: {self.audio_quality} ({quality_names.get(self.audio_quality, '未知')})")
 
     def _get_profile_path(self) -> str:
         """获取 Chrome 配置文件路径"""
@@ -55,11 +63,26 @@ class Config:
         logger.info(f"使用 Chrome 配置文件: {profile_path}")
         return profile_path
 
+    def _get_download_dir(self) -> str:
+        """获取下载目录路径"""
+        download_dir = os.getenv('DOWNLOAD_DIR')
+
+        # 设置默认下载目录
+        if not download_dir:
+            download_dir = "/Volumes/nomoshen_macmini/data/data_backup/youtube"
+
+        # 确保目录存在
+        os.makedirs(download_dir, exist_ok=True)
+
+        logger.info(f"使用下载目录: {download_dir}")
+        return download_dir
+
+    
 
 class YouTubeDownloader:
     """YouTube 视频下载器主类"""
-    def __init__(self):
-        self.config = Config()
+    def __init__(self, audio_only=False, audio_quality=2):
+        self.config = Config(audio_only=audio_only, audio_quality=audio_quality)
 
     def get_cookies(self) -> bool:
         """获取并保存 cookies"""
@@ -124,19 +147,92 @@ class YouTubeDownloader:
             logger.error(f"获取 cookies 时发生错误: {e}")
             return False
 
-    def download_video(self, url: str) -> bool:
-        """下载单个视频"""
-        # yt-dlp 配置
-        ydl_opts = {
-            'cookiefile': self.config.cookies_file,
-            'outtmpl': self.config.output_template
-        }
-
-        if self.config.proxy:
-            ydl_opts['proxy'] = self.config.proxy
-
+    def _get_channel_name(self, url: str) -> str:
+        """获取视频频道名称"""
         try:
-            logger.info(f"开始下载视频: {url}")
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'cookiefile': self.config.cookies_file,
+            }
+
+            if self.config.proxy:
+                ydl_opts['proxy'] = self.config.proxy
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+
+                # 尝试获取频道名称
+                channel_name = None
+
+                # 优先从uploader字段获取
+                if info.get('uploader'):
+                    channel_name = info['uploader']
+                # 其次从channel字段获取
+                elif info.get('channel'):
+                    channel_name = info['channel']
+                # 最后从channel_id获取
+                elif info.get('channel_id'):
+                    channel_name = info['channel_id']
+
+                # 清理频道名称，移除特殊字符
+                if channel_name:
+                    # 移除不允许的文件名字符
+                    channel_name = ''.join(c for c in channel_name if c.isalnum() or c in (' ', '-', '_', '.', '(', ')'))
+                    channel_name = channel_name.strip()
+                    if not channel_name:
+                        channel_name = "UnknownChannel"
+                else:
+                    channel_name = "UnknownChannel"
+
+                logger.info(f"获取到频道名称: {channel_name}")
+                return channel_name
+
+        except Exception as e:
+            logger.warning(f"获取频道名称失败: {e}，使用默认名称")
+            return "UnknownChannel"
+
+    def download_video(self, url: str) -> bool:
+        """下载单个视频或音频"""
+        try:
+            # 获取频道名称
+            channel_name = self._get_channel_name(url)
+
+            # 创建频道目录
+            channel_dir = os.path.join(self.config.download_dir, channel_name)
+            os.makedirs(channel_dir, exist_ok=True)
+
+            # yt-dlp 配置
+            ydl_opts = {
+                'cookiefile': self.config.cookies_file,
+                'outtmpl': os.path.join(channel_dir, self.config.output_template)
+            }
+
+            if self.config.proxy:
+                ydl_opts['proxy'] = self.config.proxy
+
+            # 音频下载设置
+            if self.config.audio_only:
+                ydl_opts.update({
+                    'format': f'bestaudio[acodec^=opus]/bestaudio/best',
+                    'postprocessors': [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': str(self.config.audio_quality),
+                    }],
+                    'writethumbnail': False,
+                    'keepvideo': False
+                })
+                download_type = "音频"
+                file_extension = "mp3"
+            else:
+                ydl_opts.update({
+                    'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+                })
+                download_type = "视频"
+                file_extension = "mp4"
+
+            logger.info(f"开始下载{download_type}: {url} 到频道目录: {channel_name}")
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
             logger.info(f"下载完成: {url}")
@@ -185,17 +281,29 @@ class YouTubeDownloader:
     def list_formats(self, url: str) -> bool:
         """列出视频所有可用格式"""
         try:
+            # 获取频道名称用于显示
+            channel_name = self._get_channel_name(url)
+            channel_dir = os.path.join(self.config.download_dir, channel_name)
+            os.makedirs(channel_dir, exist_ok=True)
+
             ydl_opts = {
                 'quiet': False,
                 'no_warnings': False,
                 'listformats': True,
                 'cookiefile': self.config.cookies_file,
+                'paths': {'home': channel_dir}
             }
 
             if self.config.proxy:
                 ydl_opts['proxy'] = self.config.proxy
 
-            logger.info(f"正在获取视频格式信息: {url}")
+            # 如果是音频模式，只显示音频格式
+            if self.config.audio_only:
+                logger.info(f"正在获取音频格式信息: {url} (频道: {channel_name})")
+                ydl_opts['format'] = 'bestaudio[acodec^=opus]/bestaudio/best'
+            else:
+                logger.info(f"正在获取视频格式信息: {url} (频道: {channel_name})")
+
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.extract_info(url, download=False)
 
@@ -208,27 +316,48 @@ class YouTubeDownloader:
     def _check_video_available(self, url: str) -> bool:
         """检查视频是否可用"""
         try:
+            channel_name = self._get_channel_name(url)
+            channel_dir = os.path.join(self.config.download_dir, channel_name)
+            os.makedirs(channel_dir, exist_ok=True)
+
             ydl_opts = {
                 'quiet': True,
                 'no_warnings': True,
                 'cookiefile': self.config.cookies_file,
+                'paths': {'home': channel_dir}
             }
 
             if self.config.proxy:
                 ydl_opts['proxy'] = self.config.proxy
 
+            # 根据模式检查不同类型的格式
+            if self.config.audio_only:
+                ydl_opts['format'] = 'bestaudio[acodec^=opus]/bestaudio/best'
+                content_type = "音频"
+            else:
+                ydl_opts['format'] = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+                content_type = "视频"
+
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
 
-                # 检查是否有可用的视频格式
+                # 检查是否有可用的格式
                 formats = info.get('formats', [])
-                video_formats = [f for f in formats if f.get('vcodec') != 'none' and f.get('acodec') != 'none']
+                if self.config.audio_only:
+                    # 检查音频格式
+                    audio_formats = [f for f in formats if f.get('acodec') != 'none']
+                    if not audio_formats:
+                        logger.info(f"{content_type} '{info.get('title', 'Unknown')}' 没有可用的音频格式")
+                        return False
+                    logger.info(f"{content_type} '{info.get('title', 'Unknown')}' 可用，找到 {len(audio_formats)} 个音频格式")
+                else:
+                    # 检查视频格式
+                    video_formats = [f for f in formats if f.get('vcodec') != 'none' and f.get('acodec') != 'none']
+                    if not video_formats:
+                        logger.info(f"{content_type} '{info.get('title', 'Unknown')}' 没有可用的视频格式")
+                        return False
+                    logger.info(f"{content_type} '{info.get('title', 'Unknown')}' 可用，找到 {len(video_formats)} 个视频格式")
 
-                if not video_formats:
-                    logger.info(f"视频 '{info.get('title', 'Unknown')}' 没有可用的视频格式")
-                    return False
-
-                logger.info(f"视频 '{info.get('title', 'Unknown')}' 可用，找到 {len(video_formats)} 个格式")
                 return True
 
         except Exception as e:
@@ -268,13 +397,22 @@ def parse_args():
                        help='列出视频的可用格式而不下载')
     parser.add_argument('--url', '-u', type=str,
                        help='指定要处理的单个视频 URL')
+    parser.add_argument('--audio-only', '-a', action='store_true',
+                       help='仅下载音频（MP3格式）')
+    parser.add_argument('--audio-quality', '-q', type=int, choices=range(0, 6), default=2,
+                       help='音频质量：0（最差）到 5（最佳），默认为2（良好）')
     return parser.parse_args()
 
 def main():
     """主函数"""
     try:
         args = parse_args()
-        downloader = YouTubeDownloader()
+
+        # 创建下载器实例，传入命令行参数
+        downloader = YouTubeDownloader(
+            audio_only=args.audio_only,
+            audio_quality=args.audio_quality
+        )
 
         if args.url:
             # 处理单个 URL
@@ -282,15 +420,16 @@ def main():
 
             if args.list_formats:
                 # 列出格式
-                logger.info("正在获取视频格式信息...")
+                logger.info("正在获取格式信息...")
                 if not downloader.get_cookies():
                     logger.error("无法获取有效的 cookies")
                     return
 
                 downloader.list_formats(url)
             else:
-                # 下载单个视频
-                logger.info("正在下载单个视频...")
+                # 下载单个视频/音频
+                content_type = "音频" if args.audio_only else "视频"
+                logger.info(f"正在下载单个{content_type}...")
                 if not downloader.get_cookies():
                     logger.error("无法获取有效的 cookies")
                     return
@@ -322,11 +461,13 @@ def main():
                     downloader.list_formats(url)
             else:
                 # 批量下载
+                content_type = "音频" if args.audio_only else "视频"
+                logger.info(f"开始批量下载{content_type}...")
                 results = downloader.download_urls(urls)
 
                 # 输出结果统计
-                print(f"\n下载完成统计:")
-                print(f"总计: {results['total']} 个视频")
+                print(f"\n{content_type}下载完成统计:")
+                print(f"总计: {results['total']} 个{content_type}")
                 print(f"成功: {results['success']} 个")
                 print(f"失败: {results['failed']} 个")
                 print(f"不可用: {results['unavailable']} 个")
