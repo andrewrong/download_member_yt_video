@@ -10,4 +10,4 @@ python-dotenv==1.0.1
 requests==2.32.3
 urllib3==2.2.3
 websockets==13.0.1
-yt-dlp==2024.8.6
+yt-dlp==2025.9.23

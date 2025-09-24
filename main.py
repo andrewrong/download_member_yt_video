@@ -29,7 +29,7 @@ DEFAULT_OUTPUT_TEMPLATE = '%(title)s.%(ext)s'
 
 class Config:
     """配置管理类"""
-    def __init__(self, audio_only=False, audio_quality=2):
+    def __init__(self, audio_only=False, audio_quality=2, video_quality='medium'):
         self.profile_path = self._get_profile_path()
         self.cookies_file = DEFAULT_COOKIES_FILE
         self.urls_file = DEFAULT_URLS_FILE
@@ -37,6 +37,7 @@ class Config:
         self.download_dir = self._get_download_dir()
         self.audio_only = audio_only
         self.audio_quality = audio_quality
+        self.video_quality = video_quality
         self.proxy = os.getenv('PROXY')
 
         # 过滤空值
@@ -50,6 +51,11 @@ class Config:
         logger.info(f"音频仅下载模式: {'启用' if self.audio_only else '禁用'}")
         quality_names = {0: '最差', 1: '较差', 2: '良好', 3: '很好', 4: '极好', 5: '最佳'}
         logger.info(f"音频质量设置: {self.audio_quality} ({quality_names.get(self.audio_quality, '未知')})")
+
+        # 显示视频质量设置
+        if not self.audio_only:
+            video_quality_names = {'low': '低', 'medium': '中等', 'high': '高', 'best': '最佳'}
+            logger.info(f"视频质量设置: {self.video_quality} ({video_quality_names.get(self.video_quality, '未知')})")
 
     def _get_profile_path(self) -> str:
         """获取 Chrome 配置文件路径"""
@@ -81,8 +87,8 @@ class Config:
 
 class YouTubeDownloader:
     """YouTube 视频下载器主类"""
-    def __init__(self, audio_only=False, audio_quality=2):
-        self.config = Config(audio_only=audio_only, audio_quality=audio_quality)
+    def __init__(self, audio_only=False, audio_quality=2, video_quality='medium'):
+        self.config = Config(audio_only=audio_only, audio_quality=audio_quality, video_quality=video_quality)
 
     def get_cookies(self) -> bool:
         """获取并保存 cookies"""
@@ -226,8 +232,15 @@ class YouTubeDownloader:
                 download_type = "音频"
                 file_extension = "mp3"
             else:
+                # 根据视频质量设置格式
+                quality_formats = {
+                    'low': 'worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst[ext=mp4]/worst',
+                    'medium': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[ext=mp4]/best',
+                    'high': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best[ext=mp4]/best',
+                    'best': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+                }
                 ydl_opts.update({
-                    'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+                    'format': quality_formats.get(self.config.video_quality, quality_formats['medium'])
                 })
                 download_type = "视频"
                 file_extension = "mp4"
@@ -401,6 +414,9 @@ def parse_args():
                        help='仅下载音频（MP3格式）')
     parser.add_argument('--audio-quality', '-q', type=int, choices=range(0, 6), default=2,
                        help='音频质量：0（最差）到 5（最佳），默认为2（良好）')
+    parser.add_argument('--video-quality', '-v', type=str,
+                       choices=['low', 'medium', 'high', 'best'], default='medium',
+                       help='视频质量：low（低）、medium（中等）、high（高）、best（最佳），默认为medium（中等）')
     return parser.parse_args()
 
 def main():
@@ -411,7 +427,8 @@ def main():
         # 创建下载器实例，传入命令行参数
         downloader = YouTubeDownloader(
             audio_only=args.audio_only,
-            audio_quality=args.audio_quality
+            audio_quality=args.audio_quality,
+            video_quality=args.video_quality
         )
 
         if args.url:
