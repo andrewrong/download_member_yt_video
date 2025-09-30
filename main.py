@@ -24,7 +24,7 @@ load_dotenv()
 # 配置常量
 DEFAULT_COOKIES_FILE = 'youtube_cookies.txt'
 DEFAULT_URLS_FILE = 'urls.txt'
-DEFAULT_OUTPUT_TEMPLATE = '%(title)s.%(ext)s'
+DEFAULT_OUTPUT_TEMPLATE = '%(upload_date)s - %(title)s.%(ext)s'
 
 
 class Config:
